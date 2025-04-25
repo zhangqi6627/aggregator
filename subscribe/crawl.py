@@ -116,13 +116,14 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
 
     datasets, peristedtasks = [], {}
     try:
-        persists = conf.get("persist", {})
-        engine = persists.get("engine", "")
+        storage = conf.get("storage", {})
+        persists = storage.get("items", {})
+
         subspushconf = persists.get("subs", {})
         linkspushconf = persists.get("proxies", {})
 
-        pushtool = push.get_instance(engine=engine)
-        should_persist = pushtool.validate(push_conf=subspushconf)
+        pushtool = push.get_instance(config=push.PushConfig.from_dict(storage))
+        should_persist = pushtool.validate(config=subspushconf)
         # skip tasks if mode == 1 and not set persistence
         if mode == 1 and not should_persist:
             logger.warning(
@@ -132,7 +133,7 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
 
         # allow if persistence configuration is valid
         enable = conf.get("singlelink", False)
-        allow = enable and pushtool.validate(linkspushconf)
+        allow = enable and pushtool.validate(config=linkspushconf)
 
         # save it to environment
         os.environ[SINGLE_PROXIES_ENV_NAME] = str(allow).lower()
@@ -241,7 +242,7 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
 
         # remain
         if should_persist:
-            url = pushtool.raw_url(push_conf=subspushconf)
+            url = pushtool.raw_url(config=subspushconf)
             try:
                 url, content = url or "", ""
                 if not url.startswith(utils.FILEPATH_PROTOCAL):
@@ -266,7 +267,7 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
         if not records:
             if peristedtasks and should_persist and mode != 2:
                 content = json.dumps(peristedtasks)
-                pushtool.push_to(content=content, push_conf=subspushconf, group="crawl")
+                pushtool.push_to(content=content, config=subspushconf, group="crawl")
 
             logger.debug("[CrawlInfo] cannot found any subscribe from Google/Telegram/Github and Page with crawler")
             return datasets
@@ -314,9 +315,9 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
             if len(proxies) > 0:
                 try:
                     content = base64.b64encode("\n".join(proxies).encode()).decode()
-                    success = pushtool.push_to(content=content, push_conf=linkspushconf, group="proxies")
+                    success = pushtool.push_to(content=content, config=linkspushconf, group="proxies")
                     if success:
-                        singlelink = pushtool.raw_url(push_conf=linkspushconf)
+                        singlelink = pushtool.raw_url(config=linkspushconf)
                         item = {
                             "name": "singlelink",
                             "sub": singlelink,
@@ -345,7 +346,7 @@ def batch_crawl(conf: dict, num_threads: int = 50, display: bool = True) -> list
 
             if rest:
                 content = json.dumps(survivors)
-                pushtool.push_to(content=content, push_conf=subspushconf, group="crawl")
+                pushtool.push_to(content=content, config=subspushconf, group="crawl")
     except:
         logger.error("[CrawlError] crawl from web error")
         traceback.print_exc()
@@ -756,7 +757,7 @@ def search_github_code(page: int, cookie: str, excludes: list = []) -> list[str]
         return []
 
     try:
-        regex = r'<a href="(/\S+/blob/.*?)#L\d+"'
+        regex = r'href="(/[^\s"]+/blob/(?:[^"]+)?)#L\d+"'
         groups = re.findall(regex, content, flags=re.I)
         uris, links = list(set(groups)) if groups else [], set()
         excludes = list(set(excludes))
@@ -1081,7 +1082,7 @@ def extract_subscribes(
         return {}
     try:
         limits, collections, proxies = max(1, limits), {}, []
-        sub_regex = r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+(?:(?:(?:/index.php)?/api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32})|(?:/link/[a-zA-Z0-9]+\?(?:sub|mu|clash)=\d))|https://jmssub\.net/members/getsub\.php\?service=\d+&id=[a-zA-Z0-9\-]{36}(?:\S+)?"
+        sub_regex = r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+(?:(?:(?:/index.php)?/api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32})|(?:/link/[a-zA-Z0-9]+\?(?:sub|mu|clash)=\d)|(?:/(?:s|sub)/[a-zA-Z0-9]{32}))|https://jmssub\.net/members/getsub\.php\?service=\d+&id=[a-zA-Z0-9\-]{36}(?:\S+)?"
         extra_regex = r"https?://(?:[a-zA-Z0-9\u4e00-\u9fa5\-]+\.)+[a-zA-Z0-9\u4e00-\u9fa5\-]+/sub\?(?:\S+)?target=\S+"
         protocal_regex = r"(?:vmess|trojan|ss|ssr|snell|hysteria2|vless|hysteria|tuic)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}"
 
@@ -1261,7 +1262,8 @@ def check_status(
         if response.getcode() != 200:
             return False, connectable
 
-        content = str(response.read(), encoding="utf8")
+        # in order to avoid the request to the speed test site causing constant data downloads, limit the maximum read to 15MB
+        content = str(response.read(15 * 1024 * 2014), encoding="utf8")
 
         # response text is too short, ignore
         if len(content) < 32:
@@ -1476,6 +1478,7 @@ def collect_airport(
         except:
             logger.error(f"[AirPortCollector] occur error when crawl from [{url}], message: \n{traceback.format_exc()}")
 
+        logger.info(f"[AirPortCollector] finished crawl from [{url}], found {len(result)} domains")
         return result
 
     def crawl_maomeng() -> dict:
@@ -1518,7 +1521,7 @@ def collect_airport(
             return {}
 
         separator = r'<h2 id="\d+" tabindex="-1">'
-        address_regex = r'<a href="(https?://[^\s]+)" target="_blank" rel="noreferrer">前往注册</a>'
+        address_regex = r'<a href="(https?://[^\s]+)" target="_blank" rel="noreferrer nofollow">前往注册</a>'
         coupon_regex = r"使用优惠码(?:\s+)?(?:<code>)?([^\r\n\s]+)(?:</code>(?:[\r\n\s]+)?)?0(?:\s+)?元购买"
 
         tasks = [[x, separator, address_regex, coupon_regex] for x in sorted(articles)]
@@ -1545,7 +1548,10 @@ def collect_airport(
             else:
                 links = tasks
 
-            return {utils.extract_domain(url=x, include_protocal=True): "" for x in links if x}
+            result = {utils.extract_domain(url=x, include_protocal=True): "" for x in links if x}
+            logger.info(f"[AirPortCollector] finished crawl from [{url}], found {len(result)} domains")
+
+            return result
         except:
             logger.error(f"[AirPortCollector] occur error when crawl from [{url}], message: \n{traceback.format_exc()}")
             return {}
@@ -1597,6 +1603,7 @@ def collect_airport(
         except:
             logger.error(f"[AirPortCollector] occur error when crawl from [{url}], message: \n{traceback.format_exc()}")
 
+        logger.info(f"[AirPortCollector] finished crawl from [{url}], found {len(result)} domains")
         return result
 
     def extract_backend_url(domain: str, retry: int = 2) -> str:
